@@ -1,4 +1,3 @@
-/* 러츠의 패스파인더 모험기 */
 {
   const mul = seed => () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
   const unseal = s => { const [k, d] = s.split("."), o = Uint8Array.from(atob(d), c => c.charCodeAt(0)), r = mul(parseInt(k, 36)), b = new Uint8Array(o.length); for (let i = 0; i < o.length; i++) b[i] = o[o.length - 1 - i] ^ (r() * 256 | 0); return JSON.parse(new TextDecoder().decode(b)); };
@@ -11,17 +10,21 @@
   const CAT = "art/cat.webp";
   const T0 = performance.now();
 
-  /* ---------- 상태 ---------- */
   const store = {
     get: k => { try { return JSON.parse(localStorage.getItem("gt-" + k)); } catch { return null; } },
-    set: (k, v) => { try { v == null ? localStorage.removeItem("gt-" + k) : localStorage.setItem("gt-" + k, JSON.stringify(v)); } catch { /* 저장소 없음 */ } }
+    set: (k, v) => { try { v == null ? localStorage.removeItem("gt-" + k) : localStorage.setItem("gt-" + k, JSON.stringify(v)); } catch {} }
   };
   let gm = store.get("gm");
   let torchPreview = false;
   let screen = "intro", run = null, result = null, busy = false, hidTimer = 0;
   const seats = { count: R.passed || 0, live: false };
+  const MAX_TRIES = Math.max(1, S.maxTries ?? 3);
+  const tries = {
+    get() { let n = 0; try { n = +localStorage.getItem("gt-tries") || 0; } catch {} const m = document.cookie.match(/(?:^|; )gt_tries=(\d+)/); return Math.max(n, m ? +m[1] : 0); },
+    set(n) { try { localStorage.setItem("gt-tries", String(n)); } catch {} try { document.cookie = `gt_tries=${n}; max-age=${60 * 60 * 24 * 180}; path=/; SameSite=Lax`; } catch {} }
+  };
+  const triesLeft = () => gm ? Infinity : Math.max(0, MAX_TRIES - tries.get());
 
-  /* ---------- 유틸 ---------- */
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
   const rng = seed => () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
@@ -32,7 +35,6 @@
   const showTorch = () => S.showTorch || torchPreview || !!(gm && gm.torch);
   const hiddenDelay = () => (gm && gm.fast ? 2 : S.hiddenDelay) * 1000;
 
-  /* ---------- 출제: 층마다 core는 항상, 나머지는 pick 수만큼 무작위 ---------- */
   function newRun() {
     const order = [];
     for (const s of Q.sections) {
@@ -55,7 +57,6 @@
   }
   const pairsOf = r => r.ans.map((oi, p) => [r.order[p], oi]);
 
-  /* ---------- 채점 ---------- */
   const SP = Object.assign({ msPerChar: 12, min: 1.5, max: 4, burn: 2 }, S.speed);
   const minRead = q => Math.min(SP.max * 1000, Math.max(SP.min * 1000, (q.text.length + q.options.filter(o => !o.hidden).reduce((a, o) => a + o.t.length, 0)) * SP.msPerChar));
   function evaluate(pairs, times, always) {
@@ -89,9 +90,7 @@
     return { torch, fit: pct, axp, type, died, hidden, fast, n: pairs.length };
   }
 
-  /* ---------- 결과 코드 (GM 패널에서 해독) ---------- */
   const chk = s => { let h = 7; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 1296; return h.toString(36).padStart(2, "0"); };
-  // 방마다 걸린 시간은 0.5초 단위(최대 17.5초)로 한 글자씩 기록
   const makeCode = (pairs, fit, times, total) => {
     const body = pairs.map(([qi, oi], p) => qi.toString(36).padStart(2, "0") + oi.toString(36) + Math.min(35, Math.floor((times[p] || 0) / 500)).toString(36)).join("");
     const head = `${fit}-${Math.round(total / 1000).toString(36)}`;
@@ -110,19 +109,17 @@
     return { pairs, times, total: parseInt(m[2], 36) };
   }
 
-  /* ---------- 자리 카운터 (Cloudflare Worker) ---------- */
-  async function counter(method) {
+  async function counter(method, headers) {
     if (!R.counterUrl) return null;
     try {
       const ctl = new AbortController(); setTimeout(() => ctl.abort(), 4000);
-      const res = await fetch(R.counterUrl, { method, signal: ctl.signal });
+      const res = await fetch(R.counterUrl, { method, headers, signal: ctl.signal });
       return res.ok ? await res.json() : null;
     } catch { return null; }
   }
   const isFull = () => seats.count >= R.cap;
   const dur = ms => { const s = Math.round(ms / 1000); return s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`; };
 
-  /* ---------- 손그림 지도 ---------- */
   function mapSVG(cur, deadAt = -1, ghost = null) {
     const order = run.order, n = order.length, W = 560, cols = Math.min(n, 10), rows = Math.ceil(n / cols);
     const s = 22, pad = 8, stepX = cols > 1 ? (W - pad * 2 - s) / (cols - 1) : 0, stepY = 48;
@@ -161,9 +158,15 @@
     return `<svg class="map" viewBox="-4 -6 ${W + 8} ${H}" role="img" aria-label="던전 지도, 방 ${n}개">${cors}<g class="rooms">${rooms}</g></svg>`;
   }
 
-  /* ---------- 화면: 시작 ---------- */
+  function triesLine() {
+    const left = triesLeft();
+    if (left === Infinity) return "";
+    return left > 0 ? `<p class="note">남은 도전 기회 <span class="nw">${left} / ${MAX_TRIES}번</span></p>`
+      : `<p class="note">도전 기회를 모두 썼어요. 유령으로 둘러볼 수는 있지만, 문은 열리지 않아요.</p>`;
+  }
+
   function viewIntro() {
-    const n = run.order.length, mins = Math.max(3, Math.round(n * 13 / 60));
+    const n = run.order.length, mins = Math.max(3, Math.round(n * 13 / 60)), left = triesLeft();
     const seatLine = R.closed ? "이번 모집은 마감되었어요. 시험은 재미로 해 볼 수 있습니다."
       : isFull() ? `정원 ${R.cap}명이 찼어요. 지금 통과하면 예비 모험가 명부에 올라갑니다.`
       : `지금까지 최심부에 도달한 모험가 <span class="nw">${seats.count} / ${R.cap}명</span>`;
@@ -178,12 +181,12 @@
       <p class="seats">${seatLine}</p>
       <hr class="rule">
       <p class="honest">방은 ${n}개, ${mins}분 정도 걸립니다. ${esc(Q.meta.honesty)}</p>
-      <button class="btn" data-act="start">${esc(Q.meta.start)}</button>
+      ${triesLine()}
+      <button class="btn" data-act="start">${left > 0 ? esc(Q.meta.start) : "유령으로 들어간다"}</button>
       <p class="colophon">${esc(Q.meta.credit)}</p>
     </article>`;
   }
 
-  /* ---------- 화면: 방 ---------- */
   function scoreNote(q, o) {
     if (!(gm && gm.scores)) return "";
     const w = q.weight ?? 1, fx = Object.entries(o.fx || {}).map(([k, v]) => `${Q.axes[k]}${v > 0 ? "+" : ""}${v}`).join(" ");
@@ -207,7 +210,7 @@
       ${mapSVG(pos, -1, run.ghost)}
       <p class="floor">${esc(secOf(q.section).name)}</p>
       <h2 class="room-no" tabindex="-1">방 ${pos + 1}<small>/ ${n}</small></h2>
-      ${run.ghost != null ? `<p class="ghost-note">유령이 되어 둘러보는 중입니다. 결과는 볼 수 있지만, 문은 열리지 않아요.</p>` : ""}
+      ${run.ghost != null ? `<p class="ghost-note">${run.ghost < 0 ? "도전 기회를 모두 써서 유령으로 둘러보는 중이에요." : "유령이 되어 둘러보는 중입니다."} 결과는 볼 수 있지만, 문은 열리지 않아요.</p>` : ""}
       <p class="q">${esc(q.text)}</p>
       ${q.tags ? `<ul class="tags">${q.tags.map(t => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
       <ol class="opts">${opts}</ol>
@@ -222,7 +225,6 @@
     app.querySelectorAll(".opts li.secret, .hint").forEach(el => el.classList.add("reveal"));
   }
 
-  /* ---------- 화면: 결과 ---------- */
   function typeBlock(ev, label, seal) {
     const t = Q.types[ev.type] || Q.types.none;
     const bars = AX.filter(k => ev.axp[k] != null).map(k =>
@@ -259,7 +261,8 @@
 
   function viewEnd() {
     const { kind, ev } = result, E = Q.endings;
-    const retry = S.allowRetry ? `<button class="link" data-act="retry">처음부터 다시</button>` : "";
+    const left = triesLeft();
+    const retry = !S.allowRetry ? "" : `<button class="link" data-act="retry">${left === Infinity ? "처음부터 다시" : left > 0 ? `처음부터 다시 (남은 기회 ${left}번)` : "유령으로 다시 둘러보기"}</button>`;
     if (kind === "dark") {
       const d = ev.died, D = E.deaths[d.key] || E.deaths.default, q = Q.questions[run.order[d.step]];
       const t = Q.types[ev.type] || Q.types.none;
@@ -281,7 +284,8 @@
       </article>`;
     }
     const e = E[kind];
-    const ghostLine = kind === "ghost" ? (() => { const d = evaluate(pairsOf(run).slice(0, run.ghost + 1)).died, D = E.deaths[d?.key] || E.deaths.default; return `<p class="where">사인: ${esc(D.cause)} (방 ${run.ghost + 1})</p>`; })() : "";
+    const ghostLine = kind !== "ghost" ? "" : run.ghost < 0 ? `<p class="where">도전 기회를 다 쓴 뒤 유령으로 둘러봤어요</p>`
+      : (() => { const d = evaluate(pairsOf(run).slice(0, run.ghost + 1), run.times).died, D = E.deaths[d?.key] || E.deaths.default; return `<p class="where">사인: ${esc(D.cause)} (방 ${run.ghost + 1})</p>`; })();
     return `<article class="sheet enter">
       ${mapSVG(run.order.length, -1, kind === "ghost" ? run.ghost : null)}
       ${ghostLine}
@@ -294,7 +298,6 @@
     </article>`;
   }
 
-  /* ---------- 화면: 결과 코드 해독 (GM 전용) ---------- */
   function viewDecode() {
     return `<article class="sheet enter decode">
       <h1 class="title">결과 코드 해독</h1>
@@ -317,7 +320,6 @@
     return `<p class="score">${esc(head)}</p><p>${esc(t.name)}</p><ul class="dlist">${rows}</ul>`;
   }
 
-  /* ---------- 그리기 ---------- */
   function render(animate = true) {
     clearTimeout(hidTimer);
     if (screen === "room" && run.shownPos !== run.pos) { run.shownPos = run.pos; run.shownAt = performance.now(); }
@@ -332,7 +334,6 @@
     if (window.scrollY > 0) window.scrollTo(0, 0);
   }
 
-  /* ---------- 진행 ---------- */
   function choose(oi, btn) {
     if (busy) return;
     busy = true;
@@ -342,7 +343,7 @@
     const took = performance.now() - run.shownAt;
     setTimeout(() => {
       busy = false;
-      run.ans[run.pos] = oi; run.times[run.pos] = Math.max(took, run.times[run.pos] || 0); // 다시 고른 방은 처음 읽은 시간을 인정
+      run.ans[run.pos] = oi; run.times[run.pos] = Math.max(took, run.times[run.pos] || 0);
       run.ans.length = run.times.length = run.pos + 1;
       run.shownPos = -1;
       const pairs = pairsOf(run), ev = evaluate(pairs, run.times);
@@ -351,6 +352,12 @@
       run.pos++;
       render(); toTop();
     }, 260);
+  }
+
+  function begin() {
+    if (!gm) { if (triesLeft() > 0) tries.set(tries.get() + 1); else run.ghost = -1; }
+    result = null; screen = "room"; run.pos = 0;
+    render(); toTop();
   }
 
   async function finish(kind, ev, pairs) {
@@ -373,9 +380,9 @@
     const b = e.target.closest("[data-act]");
     if (!b) return;
     const act = b.dataset.act;
-    if (act === "start") { screen = "room"; run.pos = 0; render(); toTop(); }
+    if (act === "start") begin();
     else if (act === "back" && run.pos > 0) { run.pos--; run.shownPos = -1; render(); }
-    else if (act === "retry") { run = newRun(); result = null; screen = "room"; render(); toTop(); }
+    else if (act === "retry") { run = newRun(); begin(); }
     else if (act === "ghost") { run.ghost = result.ev.died.step; run.pos = run.ghost + 1; screen = run.pos < run.order.length ? "room" : "end"; if (screen === "end") result.kind = "ghost"; render(); toTop(); }
     else if (act === "home") { screen = "intro"; render(); }
     else if (act === "decodeGo") { document.getElementById("decoded").innerHTML = decodedHTML(document.getElementById("codein").value); }
@@ -393,7 +400,6 @@
     if (k >= 1) { const btns = [...app.querySelectorAll(".opts .opt")]; if (btns[k - 1]) choose(+btns[k - 1].dataset.oi, btns[k - 1]); }
   });
 
-  /* ---------- 관리 ---------- */
   function renderGM() {
     gmEl.hidden = !gm;
     if (!gm) return;
@@ -405,7 +411,8 @@
       ${ev ? `<p>횃불 ${ev.torch}/${S.torchStart}, 궁합 ${ev.fit}% (통과 ${S.passScore}), 빠른 답 ${ev.fast}, ${esc(Q.types[ev.type]?.name || "-")}</p>` : ""}
       ${screen === "room" ? `<p class="dim">이 방 최소 읽기 시간 ${(minRead(Q.questions[run.order[run.pos]]) / 1000).toFixed(1)}초</p>` : ""}
       <p class="dim">GM 모드에서는 통과해도 자리 수가 올라가지 않아요.</p>
-      <div class="gm-btns"><button data-gmact="decode">결과 코드 해독</button><button data-gmact="torchlink">횃불 체험 링크 복사</button><button data-gmact="off">GM 모드 끄기</button></div>
+      <div class="gm-btns"><button data-gmact="decode">결과 코드 해독</button><button data-gmact="torchlink">횃불 체험 링크 복사</button><button data-gmact="tries">이 브라우저 도전 횟수 초기화 (${tries.get()})</button><button data-gmact="off">GM 모드 끄기</button></div>
+      ${R.counterUrl ? `<p>통과 인원 ${seats.count} / ${R.cap}${seats.live ? "" : " (카운터 응답 없음)"}</p><input id="resetkey" type="password" placeholder="카운터 리셋 키" autocomplete="off"><div class="gm-btns"><button data-gmact="reset">통과 인원 초기화</button></div><p class="dim" id="resetmsg"></p>` : ""}
       <p class="dim">문항, 암호, 디코 링크는 tools/editor.html에서 고칩니다.</p>
     </details>`;
   }
@@ -420,6 +427,16 @@
     if (act === "decode") { screen = "decode"; render(); }
     else if (act === "torchlink") copy(location.href.split("#")[0] + "#torch", e.target, "복사됨");
     else if (act === "off") { gm = null; store.set("gm", null); render(false); }
+    else if (act === "tries") { tries.set(0); render(false); }
+    else if (act === "reset") {
+      const key = document.getElementById("resetkey").value.trim(), msg = document.getElementById("resetmsg");
+      if (!key) { msg.textContent = "리셋 키를 넣어 주세요."; return; }
+      msg.textContent = "초기화하는 중…";
+      counter("DELETE", { "x-reset-key": key }).then(res => {
+        if (res && res.count === 0) { seats.count = 0; seats.live = true; render(false); document.getElementById("resetmsg").textContent = "통과 인원을 0으로 되돌렸어요."; }
+        else document.getElementById("resetmsg").textContent = "초기화하지 못했어요. 리셋 키와 카운터 주소를 확인해 주세요.";
+      });
+    }
   });
 
   function onHash() {
@@ -429,7 +446,7 @@
     if (h.startsWith("gm-") && cyrb53(h.slice(3)) === S.gm.hash) {
       gm = gm || { scores: true, torch: false, fast: false, all: false };
       store.set("gm", gm);
-      try { history.replaceState(null, "", location.pathname + location.search); } catch { /* 무시 */ }
+      try { history.replaceState(null, "", location.pathname + location.search); } catch {}
       render(false);
     }
   }
@@ -438,5 +455,9 @@
   run = newRun();
   render();
   onHash();
-  counter("GET").then(res => { if (res && typeof res.count === "number") { seats.count = res.count; seats.live = true; if (screen === "intro") render(false); } });
+  (async () => {
+    let res = await counter("GET"), live = !!res;
+    if (!res) { try { const r = await fetch(`seats.txt?t=${Date.now()}`, { cache: "no-store" }); const n = r.ok ? parseInt(await r.text(), 10) : NaN; if (Number.isFinite(n)) res = { count: n }; } catch {} }
+    if (res && typeof res.count === "number") { seats.count = res.count; seats.live = live; if (screen === "intro") render(false); }
+  })();
 }
